@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:;" />
-<title>Pi Harness</title>
+<title>free-pi Harness</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="icon" href="build/logo.svg" />
@@ -734,15 +734,134 @@
   .setup-foot { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 11.5px; color: #55555e; }
   .setup-foot .lnk { color: var(--muted); text-decoration: underline; cursor: pointer; }
   .setup-err { margin-top: 10px; font-size: 12px; color: var(--bad); white-space: pre-wrap; }
+  /* ---------- flat tool log rows ---------- */
+  .trow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 6px;
+    margin: 0 0 2px;
+    border-radius: 5px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    cursor: pointer;
+    user-select: none;
+  }
+  .trow:hover { background: #141417; }
+  .trow .tstat { flex: none; width: 13px; text-align: center; font-size: 12px; }
+  .trow .tstat.ok { color: #4ade80; }
+  .trow .tstat.err { color: #f87171; }
+  .trow .tstat.live { color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+  .tspin {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid #3f3f46;
+    border-top-color: #fafafa;
+    animation: spin .7s linear infinite;
+    display: inline-block;
+  }
+  .trow .tverb { flex: none; color: #d4d4d8; }
+  .trow .tcmd { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .trow .tmeta { flex: none; color: #71717a; font-size: 11.5px; white-space: nowrap; }
+  .trow .tmeta .sep { margin: 0 4px; color: #3f3f46; }
+
+  .tpreview {
+    padding: 0 6px 0 27px;
+    margin: -1px 0 4px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #f87171;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tpreview.link { color: var(--muted); }
+  .tpreview.link a { color: #93c5fd; text-decoration: underline; cursor: pointer; }
+
+  .tbody { margin: 0 0 6px 24px; padding-left: 10px; border-left: 1px solid var(--line-soft); }
+  .tbody pre {
+    margin: 0;
+    max-height: 320px;
+    overflow: auto;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--muted);
+  }
+
+  /* ---------- collapsible thinking line ---------- */
+  .think-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-style: italic;
+    color: #a1a1aa;
+    cursor: pointer;
+    user-select: none;
+  }
+  .think-line:hover { color: var(--fg); }
+  .think.pulse .think-line { animation: thinkPulse 1.6s ease-in-out infinite; }
+  @keyframes thinkPulse {
+    0%, 100% { opacity: .5; }
+    50% { opacity: 1; }
+  }
+  .think-body {
+    display: none;
+    margin: 4px 0 6px;
+    padding-left: 10px;
+    border-left: 1px solid var(--line-soft);
+    max-height: 260px;
+    overflow: auto;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--dim);
+    white-space: pre-wrap;
+  }
+  .think.open .think-body { display: block; }
+
+  /* ---------- jump to latest ---------- */
+  .jump {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 8px);
+    transform: translateX(-50%) translateY(4px);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #18181b;
+    color: #dbeafe;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    white-space: nowrap;
+    box-shadow: 0 10px 28px -14px rgba(0, 0, 0, .95);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .16s ease, transform .16s ease;
+    z-index: 6;
+  }
+  .jump.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+  .jump:hover { border-color: #3f3f46; background: #1d1d22; }
 </style>
 </head>
 <body>
 <div class="setup" id="setup">
   <div class="setup-inner">
     <div class="setup-head">
-      <img class="logo" src="build/logo.svg" alt="Pi Harness" />
+      <img class="logo" src="build/logo.svg" alt="free-pi Harness" />
       <div>
-        <div class="setup-title">Pi Harness</div>
+        <div class="setup-title">free-pi Harness</div>
         <div class="setup-sub">A desktop harness for the free-pi runtime — no keys, no config files.</div>
       </div>
     </div>
@@ -791,7 +910,7 @@
     <div class="setup-err hidden" id="setup-err"></div>
 
     <div class="setup-foot">
-      <span id="setup-version">Pi Harness</span>
+      <span id="setup-version">free-pi Harness</span>
       <span>·</span>
       <span class="lnk" data-setup="recheck">Check again</span>
       <span>·</span>
@@ -805,7 +924,7 @@
     <button class="icon-btn" data-action="toggle-sidebar" title="Toggle sidebar (Ctrl+B)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
-    <div class="brand"><img class="logo" src="build/logo.svg" alt="Pi Harness" /><span class="dot" id="status-dot"></span><b>Pi Harness</b></div>
+    <div class="brand"><img class="logo" src="build/logo.svg" alt="free-pi Harness" /><span class="dot" id="status-dot"></span><b>free-pi Harness</b></div>
     <button class="project-chip" id="project-btn" data-action="pick-folder" title="Open project folder (Ctrl+O)">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
       <span id="project-name">Open folder…</span>
@@ -862,6 +981,7 @@
 
       <div class="composer-wrap">
         <div class="composer-shell">
+          <button class="jump" id="jump" data-action="jump-latest">↓ Jump to latest message · Ctrl+End</button>
           <div class="ad hidden" id="ad" data-action="ad-click" title="Sponsored"></div>
 
           <div class="composer">
@@ -873,7 +993,7 @@
                 <span class="val" id="model-name">model</span>
                 <span class="mult" id="model-mult"></span>
               </button>
-              <button class="chip" id="thinking-btn" data-action="open-thinking" title="Thinking level (/thinking · Ctrl+T)">
+              <button class="chip" id="thinking-btn" data-action="open-thinking" title="Thinking level (/thinking · Ctrl+Shift+T)">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3a6 6 0 0 0-4 10.5V17h8v-3.5A6 6 0 0 0 12 3z"/><path d="M9 21h6"/></svg>
                 <span class="val" id="thinking-name">medium</span>
               </button>
@@ -945,6 +1065,7 @@ const el = {
   modalTitle: $('modal-title'),
   modalBody: $('modal-body'),
   filePicker: $('file-picker'),
+  jump: $('jump'),
   soundBtn: $('sound-btn'),
   soundIcon: $('sound-icon'),
   projectName: $('project-name'),
@@ -989,7 +1110,9 @@ const S = {
   newBubble: false,
   turnTokens: 0,
   busy: {},
-  booted: false
+  booted: false,
+  stick: true,
+  showThinking: false
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -1373,31 +1496,120 @@ function diffHtml(diff) {
   return '<div class="diff">' + rows.join('') + more + '</div>';
 }
 
+function cleanAnsi(value) {
+  return String(value == null ? '' : value)
+    .replace(/\u001b\][^\u0007]*\u0007/g, '')
+    .replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, '')
+    .replace(/\r/g, '');
+}
+
+function fmtSecs(ms) {
+  const value = Math.max(0, Number(ms) || 0) / 1000;
+  return value.toFixed(1) + 's';
+}
+
+function toolVerb(name) {
+  const key = String(name || '').toLowerCase();
+  if (key === 'bash' || key === 'shell' || key === 'run' || key === 'exec') return 'Ran';
+  if (key === 'read' || key === 'read_file' || key === 'view') return 'Read';
+  if (key === 'edit' || key === 'edit_file' || key === 'apply_patch' || key === 'multiedit') return 'Edited';
+  if (key === 'write' || key === 'write_file' || key === 'create') return 'Wrote';
+  if (key === 'grep' || key === 'search' || key === 'find' || key === 'glob') return 'Searched';
+  if (key === 'ls' || key === 'list' || key === 'list_dir') return 'Listed';
+  if (key === 'web_fetch' || key === 'fetch' || key === 'webfetch') return 'Fetched';
+  if (!key) return 'Tool';
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function outputLineCount(text) {
+  const clean = String(text || '').replace(/\s+$/, '');
+  if (!clean) return 0;
+  return clean.split('\n').length;
+}
+
+function firstErrorLines(text, limit) {
+  const lines = String(text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return [];
+  const ranked = lines.filter((line) => /error|warn|fail|denied|not found|refus|fatal|exit/i.test(line));
+  const source = ranked.length ? ranked : lines;
+  return source.slice(0, limit || 2);
+}
+
+function lastUrl(text) {
+  const matches = String(text || '').match(/https?:\/\/[^\s"'<>()]+/g);
+  if (!matches || !matches.length) return '';
+  return matches[matches.length - 1].replace(/[.,;:]+$/, '');
+}
+
 function toolHtml(msg) {
-  const open = msg.open ? ' open' : '';
-  const stat = msg.status === 'running'
-    ? '<span class="spin"></span>'
-    : msg.status === 'error'
-      ? '<span style="color:var(--bad)">failed</span>'
-      : (msg.ms ? msg.ms + 'ms' : 'done');
+  const running = msg.status === 'running';
+  const bad = msg.status === 'error';
+  const output = cleanAnsi(msg.output || '');
+  const lines = outputLineCount(output);
+  const duration = Number(msg.ms) || 0;
+  const exit = msg.exit === undefined ? null : msg.exit;
+
+  const stat = running
+    ? '<span class="tstat live"><span class="tspin"></span></span>'
+    : bad
+      ? '<span class="tstat err">✗</span>'
+      : '<span class="tstat ok">✓</span>';
+
+  const meta = [];
+  if (!running) {
+    meta.push(lines + (lines === 1 ? ' line' : ' lines'));
+    if (duration > 1000) meta.push(fmtSecs(duration));
+    if (bad && exit !== null) meta.push('exit ' + exit);
+    else if (bad) meta.push('failed');
+  } else {
+    meta.push('<span data-clock>' + fmtSecs(Date.now() - (msg.startedAt || Date.now())) + '</span>');
+  }
+  const metaHtml = '<span class="tmeta">' + meta.join('<span class="sep">·</span>') + '</span>';
+
+  const head =
+    '<div class="trow' + (running ? ' live' : '') + (msg.open ? ' open' : '') + '" data-tool="' + esc(msg.id) + '">' +
+      stat +
+      '<span class="tverb">' + esc(toolVerb(msg.name)) + '</span>' +
+      '<span class="tcmd">' + esc(msg.summary || msg.name || '') + '</span>' +
+      metaHtml +
+    '</div>';
+
+  let preview = '';
+  if (!msg.open && !running) {
+    if (bad) {
+      const linesOfError = firstErrorLines(output, 2);
+      if (linesOfError.length) preview = '<div class="tpreview">' + esc(linesOfError.join(' · ')) + '</div>';
+    } else {
+      const url = lastUrl(output);
+      if (url) {
+        preview =
+          '<div class="tpreview link"><a data-url="' + esc(url) + '" title="' + esc(url) + '">' + esc(url) + '</a></div>';
+      }
+    }
+  }
+
   const body = [];
   if (msg.diff) body.push(diffHtml(msg.diff));
-  if (msg.output) body.push('<pre>' + esc(msg.output) + '</pre>');
-  if (!body.length) return '';
+  if (output) body.push('<pre>' + esc(output) + '</pre>');
+  const openBody = msg.open && body.length ? '<div class="tbody">' + body.join('') + '</div>' : '';
+  return head + preview + openBody;
+}
+
+function thinkHtml(msg, index) {
+  const open = msg.thinkOpen === undefined || msg.thinkOpen === null ? !!S.showThinking : !!msg.thinkOpen;
+  const label = 'Thinking... (ctrl+t to ' + (open ? 'hide' : 'show') + ')';
   return (
-    '<div class="tool' + open + '" data-tool="' + esc(msg.id) + '">' +
-      '<div class="tool-head">' +
-        '<span class="chev">›</span>' +
-        '<span class="tname">' + esc(msg.name) + '</span>' +
-        '<span class="tsum">' + esc(msg.summary || '') + '</span>' +
-        '<span class="tstat">' + stat + '</span>' +
-      '</div>' +
-      '<div class="tool-body">' + body.join('') + '</div>' +
+    '<div class="think' + (open ? ' open' : '') + (msg.streaming ? ' pulse' : '') + '" data-think="' + index + '">' +
+      '<div class="think-line">' + esc(label) + '</div>' +
+      '<div class="think-body">' + esc(msg.thinking) + '</div>' +
     '</div>'
   );
 }
 
-function messageHtml(msg) {
+function messageHtml(msg, index) {
   if (msg.kind === 'note') {
     return '<div class="sys-line' + (msg.bad ? ' bad' : '') + '"><span class="txt">' + esc(msg.text) + '</span></div>';
   }
@@ -1414,7 +1626,7 @@ function messageHtml(msg) {
     if (!msg.text && !msg.thinking && !msg.error && !msg.streaming) return '';
     const parts = [];
     if (msg.thinking) {
-      parts.push('<div class="thinking"><b>thinking</b>\n' + esc(msg.thinking) + '</div>');
+      parts.push(thinkHtml(msg, index));
     }
     if (msg.text) {
       parts.push('<div class="md">' + (msg.streaming ? '<span class="streaming">' + esc(msg.text) + '</span>' : md(msg.text)) + '</div>');
@@ -1433,7 +1645,7 @@ function emptyHtml() {
     return (
       '<div class="empty">' +
         '<h1>Open a project</h1>' +
-        '<p>Pi Harness runs the free-pi agent in your folder. Pick a project to start — no API keys, no setup.</p>' +
+        '<p>free-pi Harness runs the free-pi agent in your folder. Pick a project to start — no API keys, no setup.</p>' +
         '<button class="btn primary" data-action="pick-folder">Open folder (Ctrl+O)</button>' +
       '</div>'
     );
@@ -1442,7 +1654,7 @@ function emptyHtml() {
     '<div class="empty">' +
       '<h1>' + esc(S.projectName) + '</h1>' +
       '<p>Describe a task and the agent works in this folder. Type <code>/</code> for commands, <code>@</code> to reference files, <code>!</code> to run a shell command, <code>!!</code> to run it without adding it to context.</p>' +
-      '<p style="color:#55555e;font-size:12px">Enter sends · Alt+Enter queues a follow-up · Ctrl+M switches model · Ctrl+T thinking level</p>' +
+      '<p style="color:#55555e;font-size:12px">Enter sends · Alt+Enter queues a follow-up · Ctrl+M switches model · Ctrl+T thinking · Ctrl+End jump to latest</p>' +
     '</div>'
   );
 }
@@ -1450,12 +1662,70 @@ function emptyHtml() {
 function renderFeed() {
   if (!S.messages.length) {
     el.inner.innerHTML = emptyHtml();
+    renderJump();
     return;
   }
-  el.inner.innerHTML = S.messages.map(messageHtml).join('');
-  const nearBottom = el.feed.scrollHeight - el.feed.scrollTop - el.feed.clientHeight < 120;
-  if (nearBottom) el.feed.scrollTop = el.feed.scrollHeight;
+  el.inner.innerHTML = S.messages.map((msg, index) => messageHtml(msg, index)).join('');
+  if (S.stick) el.feed.scrollTop = el.feed.scrollHeight;
+  renderJump();
+  updateToolClocks();
 }
+
+function renderJump() {
+  if (!el.jump) return;
+  el.jump.classList.toggle('show', !S.stick && S.messages.length > 0);
+}
+
+function jumpToLatest() {
+  S.stick = true;
+  renderJump();
+  el.feed.scrollTop = el.feed.scrollHeight;
+  if (typeof el.feed.scrollTo === 'function') {
+    try {
+      el.feed.scrollTo({ top: el.feed.scrollHeight, behavior: 'smooth' });
+    } catch {
+      /* older engines only scroll instantly */
+    }
+  }
+}
+
+function toggleThinking() {
+  S.showThinking = !S.showThinking;
+  for (const msg of S.messages) {
+    if (msg.kind !== 'tool') msg.thinkOpen = S.showThinking;
+  }
+  renderFeed();
+}
+
+function updateToolClocks() {
+  const nodes = el.inner.querySelectorAll('.trow.live');
+  if (!nodes.length) return;
+  const now = Date.now();
+  for (const node of nodes) {
+    const id = node.getAttribute('data-tool');
+    const msg = S.messages.find((m) => m.kind === 'tool' && m.id === id);
+    if (!msg || !msg.startedAt) continue;
+    const clock = node.querySelector('[data-clock]');
+    if (clock) clock.textContent = fmtSecs(now - msg.startedAt);
+  }
+}
+
+function startFeedTicker() {
+  setInterval(() => {
+    if (document.hidden) return;
+    if (!el.inner.querySelector('.trow.live')) return;
+    updateToolClocks();
+  }, 200);
+}
+
+el.feed.addEventListener('scroll', () => {
+  const gap = el.feed.scrollHeight - el.feed.scrollTop - el.feed.clientHeight;
+  const stick = gap < 100;
+  if (stick !== S.stick) {
+    S.stick = stick;
+    renderJump();
+  }
+});
 
 /* ------------------------------------------------------------ transcript */
 
@@ -1735,9 +2005,12 @@ function handlePiEvent(ev) {
       if (!card) break;
       card.status = ev.isError ? 'error' : 'done';
       card.ms = card.startedAt ? Date.now() - card.startedAt : 0;
+      const meta = ev.meta || {};
+      if (typeof meta.durationMs === 'number' && meta.durationMs > 0) card.ms = meta.durationMs;
+      card.exit = typeof meta.exit === 'number' ? meta.exit : null;
       const text = toolResultText(ev);
       if (text) card.output = text.length > 20000 ? text.slice(0, 20000) + '\n… truncated' : text;
-      if (card.status === 'error') card.open = true;
+      if (card.status === 'error') card.hasError = true;
       schedule();
       break;
     }
@@ -1836,6 +2109,7 @@ async function send(behaviorOverride) {
   const behavior = behaviorOverride || (S.running ? 'steer' : 'prompt');
 
   const tag = behavior === 'steer' ? 'steer' : behavior === 'followUp' ? 'follow-up' : '';
+  S.stick = true;
   S.messages.push({ role: 'user', text, tag });
   if (behavior === 'prompt' || !S.running) {
     S.messages.push({ role: 'assistant', text: '', thinking: '', streaming: true });
@@ -2120,7 +2394,7 @@ async function doUpdate() {
 }
 
 async function doLogout() {
-  openModal('Sign out of free-pi', '<p>This removes the local free-pi token and releases this device session. Pi Harness cannot run tasks until you sign in again.</p><div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary" data-action="logout-confirm">Sign out</button><button class="btn ghost" data-action="modal-close">Cancel</button></div>');
+  openModal('Sign out of free-pi', '<p>This removes the local free-pi token and releases this device session. free-pi Harness cannot run tasks until you sign in again.</p><div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary" data-action="logout-confirm">Sign out</button><button class="btn ghost" data-action="modal-close">Cancel</button></div>');
 }
 
 async function logoutNow() {
@@ -2367,7 +2641,9 @@ function showHotkeys() {
     ['Ctrl+O', 'Open project folder'],
     ['Ctrl+B', 'Toggle sidebar'],
     ['Ctrl+M', 'Next model'],
-    ['Ctrl+T', 'Next thinking level'],
+    ['Ctrl+T', 'Show or hide thinking blocks'],
+    ['Ctrl+Shift+T', 'Next thinking level'],
+    ['Ctrl+End', 'Jump to the latest message'],
     ['Ctrl+L', 'Clear the transcript'],
     ['Ctrl+V', 'Paste a screenshot as an attachment'],
     ['Ctrl+/', 'Focus the composer'],
@@ -2463,7 +2739,7 @@ function openThinking() {
       '</div>'
     );
   });
-  el.thinkMenu.innerHTML = '<div class="menu-head">Thinking · Ctrl+T cycles</div>' + rows.join('');
+  el.thinkMenu.innerHTML = '<div class="menu-head">Thinking · Ctrl+Shift+T cycles</div>' + rows.join('');
   el.thinkMenu.classList.remove('hidden');
   el.modelMenu.classList.add('hidden');
 }
@@ -2675,6 +2951,7 @@ async function loadSession(id) {
     S.sessions = res.sessions || S.sessions;
     S.messages = Array.isArray(res.session.messages) ? res.session.messages : [];
     for (const msg of S.messages) msg.streaming = false;
+    S.stick = true;
     S.changed = [];
     S.diffs = {};
     S.speed = 0;
@@ -2792,6 +3069,7 @@ const actions = {
   send: () => send(),
   stop: () => stop(),
   'toggle-sound': () => toggleSound(),
+  'jump-latest': () => jumpToLatest(),
   attach: () => el.filePicker.click(),
   usage: () => showUsage(),
   export: () => doExport(),
@@ -2827,7 +3105,7 @@ const actions = {
   'open-support-site': () => svcOpen('support'),
   'copy-diagnostics': async () => {
     const text = [
-      'Pi Harness',
+      'free-pi Harness',
       'project: ' + (S.projectRoot || '-'),
       'model: ' + (S.modelId || '-'),
       'thinking: ' + S.thinking,
@@ -2926,7 +3204,7 @@ document.addEventListener('click', (event) => {
   }
 
   const toolEl = event.target.closest('[data-tool]');
-  if (toolEl && event.target.closest('.tool-head')) {
+  if (toolEl && (event.target.closest('.trow') || event.target.closest('.tool-head'))) {
     const id = toolEl.getAttribute('data-tool');
     const msg = S.messages.find((m) => m.kind === 'tool' && m.id === id);
     if (msg) {
@@ -2959,6 +3237,25 @@ document.addEventListener('click', (event) => {
   const forkEl = event.target.closest('[data-fork]');
   if (forkEl) {
     doFork(forkEl.getAttribute('data-fork'));
+    return;
+  }
+
+  const thinkEl = event.target.closest('[data-think]');
+  if (thinkEl) {
+    const index = Number(thinkEl.getAttribute('data-think'));
+    const msg = S.messages[index];
+    if (msg) {
+      const open = msg.thinkOpen === undefined || msg.thinkOpen === null ? !!S.showThinking : !!msg.thinkOpen;
+      msg.thinkOpen = !open;
+      renderFeed();
+    }
+    return;
+  }
+
+  const urlEl = event.target.closest('[data-url]');
+  if (urlEl) {
+    event.stopPropagation();
+    invoke('app:open', urlEl.getAttribute('data-url')).catch(() => {});
     return;
   }
 
@@ -3003,7 +3300,13 @@ document.addEventListener('keydown', (event) => {
   }
   if (mod && event.key.toLowerCase() === 't') {
     event.preventDefault();
-    cycleThinking();
+    if (event.shiftKey) cycleThinking();
+    else toggleThinking();
+    return;
+  }
+  if (mod && event.key === 'End') {
+    event.preventDefault();
+    jumpToLatest();
     return;
   }
   if (mod && event.key.toLowerCase() === 'l') {
@@ -3178,7 +3481,7 @@ function setupRender(status) {
   const cliOk = !!st.bundle;
   const signedIn = !!st.signedIn;
 
-  setupUi.version.textContent = 'Pi Harness ' + (st.version || '1.0.0');
+  setupUi.version.textContent = 'free-pi Harness ' + (st.version || '1.0.0');
   if (st.consent) setupUi.consentText.textContent = st.consent;
 
   setupUi.stepNode.classList.toggle('done', nodeOk);
@@ -3352,6 +3655,7 @@ async function bootApp() {
   }
   autosize();
   el.input.focus();
+  startFeedTicker();
   setInterval(() => {
     checkIdle().catch(() => {});
   }, 6000);

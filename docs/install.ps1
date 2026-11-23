@@ -1,6 +1,6 @@
 #requires -version 5.1
 <#
-  Pi Harness installer for Windows.
+  free-pi Harness installer for Windows.
   Usage:
     irm https://<owner>.github.io/<repo>/install.ps1 | iex
   or with parameters:
@@ -15,9 +15,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$AppName = 'Pi Harness'
-$ExeName = 'Pi-Harness-Setup.exe'
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Pi Harness'
+$AppName = 'free-pi Harness'
+$ExeName = 'Free-Pi-Harness-Setup.exe'
+$InstallDir = Join-Path $env:LOCALAPPDATA 'free-pi Harness'
 $AppExe = Join-Path $InstallDir ($AppName + '.exe')
 
 function Write-Step([string]$Text) {
@@ -132,7 +132,7 @@ function Ensure-FreePi {
 }
 
 function Download-App {
-  Write-Step 'Downloading Pi Harness'
+  Write-Step 'Downloading free-pi Harness'
   if (-not $Repo -or $Repo -notmatch '^[^/\s]+/[^/\s]+$') {
     throw 'This script does not know which GitHub repository to download from. Re-run with -Repo owner/repo.'
   }
@@ -160,14 +160,14 @@ function New-Shortcut {
   $shortcut.TargetPath = $AppExe
   $shortcut.WorkingDirectory = Split-Path -Parent $AppExe
   $shortcut.IconLocation = $AppExe + ',0'
-  $shortcut.Description = 'Pi Harness — desktop client for the free-pi agent'
+  $shortcut.Description = 'free-pi Harness — desktop client for the free-pi agent'
   $shortcut.Save()
   Write-Ok $link
 }
 
 try {
   Write-Host ''
-  Write-Host '  Pi Harness installer' -ForegroundColor White
+  Write-Host '  free-pi Harness installer' -ForegroundColor White
   Write-Host '  --------------------' -ForegroundColor DarkGray
 
   Ensure-Node
@@ -179,7 +179,7 @@ try {
   if ($NoLaunch) {
     Write-Ok ('Start it from ' + $AppExe)
   } else {
-    Write-Ok 'Starting Pi Harness'
+    Write-Ok 'Starting free-pi Harness'
     Start-Process -FilePath $AppExe
     Write-Note 'The first window installs nothing else: sign in with GitHub and start working.'
   }

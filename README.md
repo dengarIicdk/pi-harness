@@ -1,4 +1,4 @@
-# Pi Harness
+# free-pi Harness
 
 A monochrome Windows desktop app for the free-pi coding agent.
 
@@ -13,7 +13,7 @@ npm start
 
 ```
 npm run icons    # regenerate build/icon.png + build/icon.ico from build/logo.svg
-npm run build    # writes dist/Pi-Harness-Setup.exe
+npm run build    # writes dist/Free-Pi-Harness-Setup.exe
 ```
 
 ## Landing page and installer

@@ -1,10 +1,10 @@
 {
   "name": "pi-harness",
-  "productName": "Pi Harness",
+  "productName": "free-pi Harness",
   "version": "1.0.0",
   "description": "Minimal OpenCode-style desktop client for the free-pi coding agent: no API keys, one window, tool stream, @file, screenshots.",
   "main": "main.js",
-  "author": "Pi Harness",
+  "author": "free-pi Harness",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -18,8 +18,8 @@
     "electron": "^31.7.7"
   },
   "build": {
-    "appId": "com.piharness.app",
-    "productName": "Pi Harness",
+    "appId": "com.freepi.harness",
+    "productName": "free-pi Harness",
     "asar": true,
     "compression": "maximum",
     "directories": {
@@ -44,7 +44,7 @@
       ]
     },
     "portable": {
-      "artifactName": "Pi-Harness-Setup.exe"
+      "artifactName": "Free-Pi-Harness-Setup.exe"
     }
   }
 }
