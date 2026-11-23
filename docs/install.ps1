@@ -133,7 +133,7 @@ function Ensure-FreePi {
 
 function Download-App {
   Write-Step 'Downloading Pi Harness'
-  if (-not $Repo -or $Repo -like '*dengarIicdk/pi-harness*') {
+  if (-not $Repo -or $Repo -notmatch '^[^/\s]+/[^/\s]+$') {
     throw 'This script does not know which GitHub repository to download from. Re-run with -Repo owner/repo.'
   }
   if (-not (Test-Path -LiteralPath $InstallDir)) {
