@@ -651,7 +651,18 @@
     white-space: nowrap;
     padding-left: 1px;
   }
-  .session-row .busy { width: 5px; height: 5px; border-radius: 50%; background: var(--warn); flex: none; }
+  .session-row .busy {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--warn);
+    flex: none;
+    animation: busyPulse 1.4s ease-in-out infinite;
+  }
+  @keyframes busyPulse {
+    0%, 100% { opacity: .35; transform: scale(.85); }
+    50% { opacity: 1; transform: scale(1); }
+  }
 
   /* ---------- onboarding ---------- */
   .setup {
@@ -1127,7 +1138,9 @@ const S = {
   stick: true,
   scrollGuard: false,
   showThinking: false,
-  renderQueued: false
+  renderQueued: false,
+  background: false,
+  store: {}
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -1304,6 +1317,7 @@ function chime(kind) {
 /* --------------------------------------------------------------- renderer */
 
 function schedule() {
+  if (S.background) return;
   if (S.renderQueued) return;
   S.renderQueued = true;
   const run = () => {
@@ -1433,6 +1447,7 @@ function renderAd() {
 }
 
 function renderRunning() {
+  if (S.background) return;
   const running = S.running;
   el.send.classList.toggle('hidden', running);
   el.stop.classList.toggle('hidden', !running);
@@ -1447,7 +1462,8 @@ function renderSessions() {
   el.sessions.innerHTML = S.sessions
     .map((s) => {
       const active = s.id === S.sessionId ? ' active' : '';
-      const busy = S.busy[s.id] ? '<span class="busy"></span>' : '';
+      const entry = S.store[s.id];
+      const busy = s.id !== S.sessionId && entry && entry.running ? '<span class="busy"></span>' : '';
       const project = s.project ? '<span class="sproj">' + esc(s.project) + '</span>' : '';
       return (
         '<div class="session-row' + active + '" data-session="' + esc(s.id) + '">' +
@@ -1795,6 +1811,91 @@ function lastAssistant() {
   return null;
 }
 
+/* Transcripts are kept per session so a background agent keeps streaming into
+   its own conversation while another project is on screen. */
+function storeEntry(key) {
+  if (!key) return null;
+  if (!S.store[key]) S.store[key] = { messages: [], newBubble: false, running: false, turnTokens: 0 };
+  return S.store[key];
+}
+
+function syncActiveEntry() {
+  const entry = S.store[S.sessionId];
+  if (!entry) return;
+  entry.messages = S.messages;
+  entry.newBubble = S.newBubble;
+  entry.running = S.running;
+  entry.turnTokens = S.turnTokens || 0;
+  if (S.running) S.busy[S.sessionId] = true;
+  else delete S.busy[S.sessionId];
+}
+
+function stashActive() {
+  if (!S.sessionId) return;
+  const entry = storeEntry(S.sessionId);
+  entry.messages = S.messages;
+  entry.newBubble = S.newBubble;
+  entry.running = S.running;
+  entry.turnTokens = S.turnTokens || 0;
+  if (S.running) S.busy[S.sessionId] = true;
+  else delete S.busy[S.sessionId];
+}
+
+function applyBackgroundEvent(key, ev) {
+  const entry = S.store[key];
+  if (!entry) {
+    if (ev.type === 'agent_start' || ev.type === 'turn_start') {
+      S.busy[key] = true;
+      renderSessions();
+    }
+    return;
+  }
+  const saved = {
+    sessionId: S.sessionId,
+    messages: S.messages,
+    newBubble: S.newBubble,
+    running: S.running,
+    turnTokens: S.turnTokens,
+    background: S.background,
+    speed: S.speed,
+    speedLive: S.speedLive,
+    speedChars: S.speedChars,
+    speedStart: S.speedStart
+  };
+  S.background = true;
+  S.sessionId = key;
+  S.messages = entry.messages;
+  S.newBubble = entry.newBubble;
+  S.running = entry.running;
+  S.turnTokens = entry.turnTokens || 0;
+  try {
+    handlePiEvent(ev);
+  } catch {
+    /* a background transcript must never break the active view */
+  }
+  entry.messages = S.messages;
+  entry.newBubble = S.newBubble;
+  entry.running = S.running;
+  entry.turnTokens = S.turnTokens || 0;
+  S.sessionId = saved.sessionId;
+  S.messages = saved.messages;
+  S.newBubble = saved.newBubble;
+  S.running = saved.running;
+  S.turnTokens = saved.turnTokens;
+  S.background = saved.background;
+  S.speed = saved.speed;
+  S.speedLive = saved.speedLive;
+  S.speedChars = saved.speedChars;
+  S.speedStart = saved.speedStart;
+  if (ev.type === 'agent_start' || ev.type === 'turn_start') S.busy[key] = true;
+  if (ev.type === 'agent_settled') {
+    delete S.busy[key];
+    persistSession();
+  }
+  renderSessions();
+  renderChanged();
+}
+
 function ensureAssistant() {
   if (!S.newBubble) {
     const found = lastAssistant();
@@ -1836,15 +1937,20 @@ window.addEventListener('beforeunload', () => {
   }
 });
 
+function sessionMeta(id) {
+  return (S.sessions || []).find((s) => s.id === id) || {};
+}
+
 function persistSession() {
   if (!S.sessionId) return;
   const firstUser = S.messages.find((m) => m.role === 'user');
   const title = firstUser ? String(firstUser.text).replace(/\s+/g, ' ').slice(0, 60) : 'New session';
+  const meta = sessionMeta(S.sessionId);
   invoke('session:save', {
     session: {
       id: S.sessionId,
       title,
-      projectRoot: S.projectRoot,
+      projectRoot: meta.projectRoot || S.projectRoot,
       messages: S.messages.filter((m) => m.kind !== 'note').slice(-400)
     }
   })
@@ -1860,6 +1966,7 @@ function persistSession() {
 /* ------------------------------------------------------------- speed meter */
 
 function startSpeed() {
+  if (S.background) return;
   S.speedStart = performance.now();
   S.speedChars = 0;
   S.speed = 0;
@@ -1890,15 +1997,12 @@ function finishSpeed(exactTokens) {
 onEvent((payload) => {
   S.lastEventAt = Date.now();
   if (payload.key && S.sessionId && payload.key !== S.sessionId) {
-    if (payload.type === 'pi' && payload.event) {
-      const ev = payload.event;
-      if (ev.type === 'agent_start' || ev.type === 'turn_start') {
-        S.busy[payload.key] = true;
-        renderSessions();
-      } else if (ev.type === 'agent_settled') {
-        delete S.busy[payload.key];
-        renderSessions();
-      }
+    if (payload.type === 'pi' && payload.event) applyBackgroundEvent(payload.key, payload.event);
+    else if (payload.type === 'stats') {
+      const entry = S.store[payload.key];
+      if (entry) entry.stats = payload.stats;
+    } else if (payload.type === 'notice' && payload.level === 'error') {
+      toast(payload.text, true);
     }
     return;
   }
@@ -1946,6 +2050,7 @@ onEvent((payload) => {
     }
     case 'pi':
       handlePiEvent(payload.event || {});
+      syncActiveEntry();
       break;
     case 'tool-diff':
       handleToolDiff(payload);
@@ -2082,8 +2187,21 @@ function handlePiEvent(ev) {
       break;
     }
     case 'tool_execution_end': {
-      const card = S.messages.find((m) => m.kind === 'tool' && m.id === ev.toolCallId);
-      if (!card) break;
+      let card = S.messages.find((m) => m.kind === 'tool' && m.id === ev.toolCallId);
+      if (!card) {
+        card = {
+          kind: 'tool',
+          id: ev.toolCallId || 'tool' + Date.now(),
+          name: ev.toolName || 'tool',
+          summary: ev.summary || '',
+          status: 'running',
+          output: '',
+          diff: null,
+          open: false,
+          startedAt: Date.now()
+        };
+        S.messages.push(card);
+      }
       card.status = ev.isError ? 'error' : 'done';
       card.ms = card.startedAt ? Date.now() - card.startedAt : 0;
       const meta = ev.meta || {};
@@ -3025,20 +3143,42 @@ async function newSession() {
 
 async function loadSession(id) {
   try {
-    if (S.sessionId && S.sessionId !== id) persistSession();
+    if (S.sessionId && S.sessionId !== id) {
+      stashActive();
+      persistSession();
+    }
     const res = await invoke('session:load', { id });
     S.sessionId = res.session.id;
     S.projectRoot = res.projectRoot || S.projectRoot;
     S.projectName = res.name || S.projectName;
     S.files = res.files || [];
     S.sessions = res.sessions || S.sessions;
-    S.messages = Array.isArray(res.session.messages) ? res.session.messages : [];
+    const fromDisk = Array.isArray(res.session.messages) ? res.session.messages : [];
+    const entry = storeEntry(res.session.id);
+    if (entry.messages.length >= fromDisk.length && entry.messages.length) {
+      S.messages = entry.messages;
+    } else {
+      S.messages = fromDisk;
+      entry.messages = fromDisk;
+    }
     for (const msg of S.messages) msg.streaming = false;
+    if (!entry.running) {
+      for (const msg of S.messages) {
+        if (msg.kind === 'tool' && msg.status === 'running') {
+          msg.status = 'done';
+          msg.ms = 0;
+        }
+      }
+    }
+    entry.messages = S.messages;
+    entry.newBubble = false;
+    S.running = !!entry.running;
     S.changed = [];
     S.diffs = {};
     S.speed = 0;
-    S.running = false;
-    delete S.busy[res.session.id];
+    S.running = !!entry.running;
+    if (S.running) S.busy[res.session.id] = true;
+    else delete S.busy[res.session.id];
     if (res.engine) {
       applyEngineInfo(res.engine);
       S.engine = { state: engineStateOf(res.engine), info: res.engine, error: res.engine.error || '' };

@@ -882,7 +882,7 @@ function handleSessionEvent(rec, eng) {
     emit('pi', {
       key,
       event: Object.assign({}, rec, {
-        summary: toolSummary(rec.toolName, rec.args)
+        summary: toolSummary(rec.toolName, rec.args, owner.root)
       })
     });
     return;
@@ -1487,7 +1487,7 @@ function toolResultMeta(rec) {
   };
 }
 
-function toolSummary(name, args) {
+function toolSummary(name, args, root) {
   if (!args || typeof args !== 'object') return '';
   let pick =
     args.command ||
@@ -1499,11 +1499,12 @@ function toolSummary(name, args) {
     args.description ||
     '';
   pick = String(pick || '');
-  if ((args.path || args.file_path) && projectRoot) {
+  const scope = root || projectRoot;
+  if ((args.path || args.file_path) && scope) {
     const raw = String(args.path || args.file_path);
     const normalized = raw.split(path.sep).join('/');
-    const root = projectRoot.split(path.sep).join('/') + '/';
-    if (normalized.toLowerCase().startsWith(root.toLowerCase())) pick = normalized.slice(root.length);
+    const base = scope.split(path.sep).join('/') + '/';
+    if (normalized.toLowerCase().startsWith(base.toLowerCase())) pick = normalized.slice(base.length);
   }
   return pick.replace(/\s+/g, ' ').slice(0, 160);
 }
