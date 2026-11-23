@@ -98,16 +98,37 @@ function Ensure-Node {
   Install-Node
 }
 
+function Get-FreePiVersion {
+  $pkg = Join-Path (Join-Path $env:APPDATA 'npm') 'node_modules/free-pi-cli/package.json'
+  if (-not (Test-Path -LiteralPath $pkg)) { return $null }
+  try {
+    return (Get-Content -Raw -LiteralPath $pkg | ConvertFrom-Json).version
+  } catch {
+    return $null
+  }
+}
+
 function Ensure-FreePi {
   Write-Step 'Installing the free-pi runtime'
   Update-SessionPath
   $npm = Get-Command npm -ErrorAction SilentlyContinue
   if (-not $npm) { throw 'npm was not found even after installing Node.js.' }
+  $existing = Get-FreePiVersion
+  if ($existing) {
+    Write-Note ('free-pi-cli ' + $existing + ' is already installed, checking for updates')
+  }
   Write-Note 'npm install -g free-pi-cli@latest'
   & npm install -g free-pi-cli@latest | Out-Host
-  if ($LASTEXITCODE -ne 0) { throw 'npm could not install free-pi-cli.' }
+  if ($LASTEXITCODE -ne 0) {
+    if ($existing) {
+      Write-Note 'The update could not run (the runtime is probably in use). Continuing with the installed copy.'
+    } else {
+      throw 'npm could not install free-pi-cli.'
+    }
+  }
   Update-SessionPath
-  Write-Ok 'free-pi-cli is installed'
+  $now = Get-FreePiVersion
+  if ($now) { Write-Ok ('free-pi-cli ' + $now) } else { Write-Ok 'free-pi-cli is installed' }
 }
 
 function Download-App {

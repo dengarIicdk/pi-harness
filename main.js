@@ -1877,13 +1877,29 @@ async function setupInstallCli() {
   refreshPath();
   if (!probeNodeRuntime().ok) throw new Error('Install Node.js first.');
   if (!probeCommand('npm', ['--version']).found) throw new Error('npm is missing. Reinstall Node.js LTS.');
-  setupEmit('cli', 'start', { label: 'Installing the Free-Pi runtime…' });
-  await runStreamed('npm', ['install', '-g', 'free-pi-cli@latest'], 'cli');
+  const before = runtimeStatus();
+  setupEmit('cli', 'start', {
+    label: before.cli.found ? 'Updating the Free-Pi runtime…' : 'Installing the Free-Pi runtime…'
+  });
+  let failed = '';
+  try {
+    await runStreamed('npm', ['install', '-g', 'free-pi-cli@latest'], 'cli');
+  } catch (err) {
+    failed = err.message;
+  }
   piBundlePath = null;
   refreshPath();
   const status = runtimeStatus();
+  if (!status.bundle) {
+    setupEmit('cli', 'done', { status });
+    throw new Error(failed || 'The Free-Pi runtime was installed but its agent bundle was not found. Try again.');
+  }
+  if (failed) {
+    setupEmit('cli', 'log', {
+      line: 'The update could not run (the runtime is probably in use). Using the installed copy.'
+    });
+  }
   setupEmit('cli', 'done', { status });
-  if (!status.bundle) throw new Error('The Free-Pi runtime was installed but its agent bundle was not found. Try again.');
   return status;
 }
 
