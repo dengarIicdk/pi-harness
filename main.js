@@ -43,6 +43,7 @@ let nodeRuntime = { bin: '', version: '', ok: false };
 let piBundlePath = null;
 let piClientVersion = '0.6.25';
 let sessionsCache = [];
+let lastSessionId = '';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -134,6 +135,13 @@ function readFreePiToken() {
 
 function harnessAgentDir() {
   return path.join(app.getPath('userData'), 'agent');
+}
+
+/* One stable agent session per harness session: reopening the app continues the
+   same conversation and keeps the project context the agent already built up. */
+function engineSessionId(owner) {
+  const key = String((owner && owner.key) || '').replace(/[^A-Za-z0-9_-]/g, '');
+  return 'freepi-' + (key || 'default');
 }
 
 function piSessionDir() {
@@ -467,6 +475,7 @@ function openProject(dir) {
   const abs = path.resolve(String(dir || ''));
   const stat = fs.existsSync(abs) ? fs.statSync(abs) : null;
   if (!stat || !stat.isDirectory()) throw new Error('Not a folder: ' + dir);
+  if (abs !== projectRoot) lastSessionId = '';
   projectRoot = abs;
   saveAppState();
   return projectSummary();
@@ -551,16 +560,29 @@ function appStateFile() {
 function saveAppState() {
   try {
     ensureDir(path.dirname(appStateFile()));
-    fs.writeFileSync(appStateFile(), JSON.stringify({ projectRoot }, null, 2), 'utf8');
+    fs.writeFileSync(
+      appStateFile(),
+      JSON.stringify({ projectRoot, sessionId: lastSessionId || '' }, null, 2),
+      'utf8'
+    );
   } catch {
     /* ignore */
   }
+}
+
+/* Remember which session belongs to the folder, so a restart drops the user
+   back into the same conversation instead of the newest unrelated one. */
+function rememberSession(id, root) {
+  if (root) projectRoot = root;
+  lastSessionId = String(id || '');
+  saveAppState();
 }
 
 function loadAppState() {
   try {
     const data = JSON.parse(fs.readFileSync(appStateFile(), 'utf8'));
     if (data && data.projectRoot && fs.existsSync(data.projectRoot)) projectRoot = data.projectRoot;
+    if (data && typeof data.sessionId === 'string') lastSessionId = data.sessionId;
   } catch {
     /* first run */
   }
@@ -702,7 +724,9 @@ async function buildEngineSpawn(owner) {
       '--model',
       wanted,
       '--session-dir',
-      piSessionDir()
+      piSessionDir(),
+      '--session-id',
+      engineSessionId(source)
     ],
     shell: false,
     label: 'pi --mode rpc',
@@ -2117,6 +2141,7 @@ function registerIpc() {
       signedIn: runtime.signedIn,
       runtime,
       setupReady: runtime.ready,
+      lastSession: lastSessionId,
       catalog,
       account,
       ad,
@@ -2162,6 +2187,7 @@ function registerIpc() {
     const summary = openProject(result.filePaths[0]);
     const existing = loadSessions().find((s) => s && s.projectRoot === summary.projectRoot);
     const record = existing || upsertSession(newSessionRecord(summary.name || 'New session'));
+    rememberSession(record.id, summary.projectRoot);
     activateEngine(record.id, summary.projectRoot);
     const spawned = await ensureEngine().catch((err) => ({ error: err.message }));
     refreshAd(true).catch(() => {});
@@ -2262,6 +2288,7 @@ function registerIpc() {
   ipcMain.handle('session:new', (_e, payload) => {
     const record = newSessionRecord(payload && payload.title);
     upsertSession(record);
+    rememberSession(record.id, projectRoot);
     if (projectRoot) activateEngine(record.id, projectRoot);
     return {
       session: {
@@ -2280,6 +2307,7 @@ function registerIpc() {
     const id = String((payload && payload.id) || '');
     const found = loadSessions().find((s) => s && s.id === id);
     if (!found) throw new Error('Session not found.');
+    rememberSession(id, found.projectRoot || projectRoot);
     activateEngine(id, found.projectRoot || projectRoot);
     let engineInfo = engineStatus();
     if (engine.root && runtimeStatus().ready) {
@@ -2299,6 +2327,7 @@ function registerIpc() {
     const id = String((payload && payload.id) || '');
     const found = loadSessions().find((s) => s && s.id === id);
     if (!found) throw new Error('Session not found.');
+    rememberSession(id, found.projectRoot || projectRoot);
     activateEngine(id, found.projectRoot || projectRoot);
     let engineInfo = engineStatus();
     if (engine.root && runtimeStatus().ready) {
@@ -2313,6 +2342,23 @@ function registerIpc() {
       engine: engineInfo,
       sessions: sessionsAll()
     };
+  });
+  /* Last-chance save during window teardown; the renderer calls it with
+     sendSync so the transcript cannot be lost when the app quits. */
+  ipcMain.on('session:flush', (event, payload) => {
+    const record = payload && payload.session;
+    let saved = null;
+    try {
+      if (record && record.id) {
+        const merged = Object.assign({}, record, { projectRoot: record.projectRoot || projectRoot });
+        saved = upsertSession(merged);
+        lastSessionId = merged.id;
+        saveAppState();
+      }
+    } catch {
+      saved = null;
+    }
+    event.returnValue = { ok: !!saved, id: saved ? saved.id : null };
   });
   ipcMain.handle('session:save', (_e, payload) => {
     const record = payload && payload.session;

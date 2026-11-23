@@ -319,9 +319,17 @@
   .tool-body pre { margin: 0; padding: 10px 12px; font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
 
   .spin {
-    width: 10px; height: 10px; border-radius: 50%;
-    border: 1.5px solid #3f3f46; border-top-color: var(--fg);
-    animation: spin .7s linear infinite; flex: none;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    min-width: 10px;
+    min-height: 10px;
+    border-radius: 50%;
+    border: 2px solid #3f3f46;
+    border-top-color: var(--fg);
+    animation: spin .7s linear infinite;
+    transform-origin: 50% 50%;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -752,14 +760,19 @@
   .trow .tstat { flex: none; width: 13px; text-align: center; font-size: 12px; }
   .trow .tstat.ok { color: #4ade80; }
   .trow .tstat.err { color: #f87171; }
-  .trow .tstat.live { color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+  .trow .tstat.live { color: var(--muted); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; overflow: visible; }
   .tspin {
-    width: 8px;
-    height: 8px;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    min-width: 10px;
+    min-height: 10px;
     border-radius: 50%;
-    border: 1.5px solid #3f3f46;
+    border: 2px solid #3f3f46;
     border-top-color: #fafafa;
     animation: spin .7s linear infinite;
+    transform-origin: 50% 50%;
     display: inline-block;
   }
   .trow .tverb { flex: none; color: #d4d4d8; }
@@ -1112,7 +1125,9 @@ const S = {
   busy: {},
   booted: false,
   stick: true,
-  showThinking: false
+  scrollGuard: false,
+  showThinking: false,
+  renderQueued: false
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -1289,11 +1304,19 @@ function chime(kind) {
 /* --------------------------------------------------------------- renderer */
 
 function schedule() {
-  if (S.pendingRender) return;
-  S.pendingRender = requestAnimationFrame(() => {
+  if (S.renderQueued) return;
+  S.renderQueued = true;
+  const run = () => {
+    if (!S.renderQueued) return;
+    S.renderQueued = false;
     S.pendingRender = 0;
     renderFeed();
-  });
+  };
+  S.pendingRender = requestAnimationFrame(run);
+  clearTimeout(S.renderTimer);
+  /* requestAnimationFrame never fires while the window is occluded (agent keeps
+     streaming in the background), so keep a slow timer as a safety net. */
+  S.renderTimer = setTimeout(run, 90);
 }
 
 function renderAll() {
@@ -1666,9 +1689,27 @@ function renderFeed() {
     return;
   }
   el.inner.innerHTML = S.messages.map((msg, index) => messageHtml(msg, index)).join('');
-  if (S.stick) el.feed.scrollTop = el.feed.scrollHeight;
+  pinBottom();
   renderJump();
   updateToolClocks();
+}
+
+/* Replacing the feed resets scrollTop to 0 and that reset fires a scroll event
+   which used to look like "the user scrolled up", so the log then stayed stuck
+   at the top. Programmatic scrolls are guarded and the pin is re-applied after
+   layout settles (long diffs, fonts, images). */
+function pinBottom(force) {
+  if (!force && !S.stick) return;
+  if (force) S.stick = true;
+  S.scrollGuard = true;
+  el.feed.scrollTop = el.feed.scrollHeight;
+  requestAnimationFrame(() => {
+    if (S.stick) el.feed.scrollTop = el.feed.scrollHeight;
+    requestAnimationFrame(() => {
+      S.scrollGuard = false;
+      renderJump();
+    });
+  });
 }
 
 function renderJump() {
@@ -1678,6 +1719,7 @@ function renderJump() {
 
 function jumpToLatest() {
   S.stick = true;
+  S.scrollGuard = true;
   renderJump();
   el.feed.scrollTop = el.feed.scrollHeight;
   if (typeof el.feed.scrollTo === 'function') {
@@ -1687,6 +1729,10 @@ function jumpToLatest() {
       /* older engines only scroll instantly */
     }
   }
+  setTimeout(() => {
+    S.scrollGuard = false;
+    pinBottom(true);
+  }, 260);
 }
 
 function toggleThinking() {
@@ -1719,13 +1765,24 @@ function startFeedTicker() {
 }
 
 el.feed.addEventListener('scroll', () => {
+  if (S.scrollGuard) return;
   const gap = el.feed.scrollHeight - el.feed.scrollTop - el.feed.clientHeight;
   const stick = gap < 100;
   if (stick !== S.stick) {
     S.stick = stick;
     renderJump();
   }
-});
+}, { passive: true });
+
+/* A wheel up is an explicit intent to read older output, even when the content
+   just grew under the cursor. */
+el.feed.addEventListener('wheel', (event) => {
+  const gap = el.feed.scrollHeight - el.feed.scrollTop - el.feed.clientHeight;
+  if (event.deltaY > 0 && gap > 100 && S.stick) {
+    S.stick = false;
+    renderJump();
+  }
+}, { passive: true });
 
 /* ------------------------------------------------------------ transcript */
 
@@ -1754,6 +1811,30 @@ function finalizeAssistant() {
     if (msg.streaming) msg.streaming = false;
   }
 }
+
+function sessionSnapshot() {
+  if (!S.sessionId) return null;
+  const firstUser = S.messages.find((m) => m.role === 'user');
+  const title = firstUser ? String(firstUser.text).replace(/\s+/g, ' ').slice(0, 60) : 'New session';
+  return {
+    id: S.sessionId,
+    title,
+    projectRoot: S.projectRoot,
+    messages: S.messages.filter((m) => m.kind !== 'note').slice(-400)
+  };
+}
+
+/* Flush synchronously while the window tears down: without this the last turn
+   could be lost and the conversation would not continue after a restart. */
+window.addEventListener('beforeunload', () => {
+  const session = sessionSnapshot();
+  if (!session) return;
+  try {
+    ipcRenderer.sendSync('session:flush', { session });
+  } catch {
+    /* the app is going away anyway */
+  }
+});
 
 function persistSession() {
   if (!S.sessionId) return;
@@ -2027,6 +2108,7 @@ function handlePiEvent(ev) {
     case 'agent_end': {
       const last = lastAssistant();
       if (last && last.streaming) last.streaming = false;
+      persistSession();
       break;
     }
     case 'agent_settled': {
@@ -2943,6 +3025,7 @@ async function newSession() {
 
 async function loadSession(id) {
   try {
+    if (S.sessionId && S.sessionId !== id) persistSession();
     const res = await invoke('session:load', { id });
     S.sessionId = res.session.id;
     S.projectRoot = res.projectRoot || S.projectRoot;
@@ -2951,7 +3034,6 @@ async function loadSession(id) {
     S.sessions = res.sessions || S.sessions;
     S.messages = Array.isArray(res.session.messages) ? res.session.messages : [];
     for (const msg of S.messages) msg.streaming = false;
-    S.stick = true;
     S.changed = [];
     S.diffs = {};
     S.speed = 0;
@@ -2962,6 +3044,7 @@ async function loadSession(id) {
       S.engine = { state: engineStateOf(res.engine), info: res.engine, error: res.engine.error || '' };
     }
     renderAll();
+    pinBottom(true);
     if (res.engine && res.engine.error) note(res.engine.error, true);
   } catch (err) {
     toast(err.message, true);
@@ -3619,6 +3702,7 @@ async function bootApp() {
     S.projectName = info.name || '';
     S.files = info.files || [];
     S.sessions = info.sessions || [];
+    S.lastSession = info.lastSession || '';
     S.signedIn = !!info.signedIn;
     S.runtime = info.runtime || null;
     S.account = info.account || null;
@@ -3638,7 +3722,15 @@ async function bootApp() {
       S.engine = { state: engineStateOf(info.engine), info: info.engine, error: info.engine.error || '' };
     }
     if (info.engine && info.engine.error) note(info.engine.error, true);
-    if (S.sessions.length) {
+    /* Prefer the session the user was in last time, then any session of the
+       same folder, then the most recent one overall. */
+    const remembered = S.sessions.find((s) => s.id === S.lastSession);
+    const sameFolder = S.sessions.find((s) => s.projectRoot === S.projectRoot);
+    if (remembered) {
+      S.sessionId = remembered.id;
+    } else if (sameFolder) {
+      S.sessionId = sameFolder.id;
+    } else if (S.sessions.length) {
       S.sessionId = S.sessions[0].id;
     } else if (S.projectRoot) {
       const res = await invoke('session:new', { title: 'New session' });
