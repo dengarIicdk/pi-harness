@@ -297,6 +297,37 @@
   .sys-line .txt { white-space: pre-wrap; word-break: break-word; }
   .sys-line.bad { color: #fca5a5; }
 
+  /* monochrome status card: queue wait, 429 lane, context overflow */
+  .sys-status {
+    display: flex; gap: 10px; align-items: flex-start;
+    margin: 0 0 12px; padding: 9px 11px;
+    border: 1px solid var(--line); border-radius: 9px;
+    background: var(--panel2, rgba(255,255,255,0.03));
+    font-size: 12px; line-height: 1.5; color: var(--fg);
+  }
+  .sys-status .sicon {
+    flex: 0 0 auto; width: 14px; height: 14px; margin-top: 1px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--dim); font-size: 11px; line-height: 1;
+  }
+  .sys-status .sicon.ok { color: #86efac; }
+  .sys-status .sicon.bad { color: #fca5a5; }
+  .sys-status .stxt { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+  .sys-status .sdetail {
+    margin-top: 3px; font-size: 11px; color: var(--dim);
+    font-family: var(--mono); word-break: break-word;
+  }
+  .sys-status.ok { border-color: rgba(134,239,172,0.35); }
+  .sys-status.bad { border-color: rgba(252,165,165,0.4); }
+  .sys-status .sacts { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+  .sbtn {
+    font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 6px;
+    border: 1px solid var(--line); background: transparent; color: var(--dim);
+    cursor: pointer; white-space: nowrap;
+  }
+  .sbtn:hover { color: var(--fg); border-color: var(--dim); }
+  .sbtn.primary { color: var(--fg); border-color: var(--dim); }
+
   /* ---------- tool cards ---------- */
   .tool { border: 1px solid var(--line-soft); background: var(--card); border-radius: 8px; margin: 0 0 10px; overflow: hidden; }
   .tool-head {
@@ -1140,7 +1171,12 @@ const S = {
   showThinking: false,
   renderQueued: false,
   background: false,
-  store: {}
+  store: {},
+  lastPrompt: null,
+  compactGuard: '',
+  suppressRetryAt: 0,
+  queueStatus: null,
+  compactStatus: null
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -1652,6 +1688,7 @@ function messageHtml(msg, index) {
   if (msg.kind === 'note') {
     return '<div class="sys-line' + (msg.bad ? ' bad' : '') + '"><span class="txt">' + esc(msg.text) + '</span></div>';
   }
+  if (msg.kind === 'status') return statusHtml(msg);
   if (msg.kind === 'tool') return toolHtml(msg);
   if (msg.role === 'user') {
     return (
@@ -1951,7 +1988,7 @@ function persistSession() {
       id: S.sessionId,
       title,
       projectRoot: meta.projectRoot || S.projectRoot,
-      messages: S.messages.filter((m) => m.kind !== 'note').slice(-400)
+      messages: S.messages.filter((m) => m.kind !== 'note' && m.kind !== 'status').slice(-400)
     }
   })
     .then((res) => {
@@ -2048,6 +2085,9 @@ onEvent((payload) => {
       renderHeader();
       break;
     }
+    case 'queue':
+      handleQueueEvent(payload);
+      break;
     case 'pi':
       handlePiEvent(payload.event || {});
       syncActiveEntry();
@@ -2073,6 +2113,7 @@ onEvent((payload) => {
     case 'stderr': {
       const text = String(payload.text || '').trim();
       if (!text) break;
+      if (/compaction failed|nothing to compact|context.{0,10}too long|context_too_long/i.test(text) && statusByKind('context')) break;
       if (/error|failed|refus|denied|limit|quota/i.test(text)) note(text, true);
       break;
     }
@@ -2144,6 +2185,15 @@ function handlePiEvent(ev) {
         msg.thinking = (msg.thinking || '') + ev.delta;
         schedule();
       } else if (ev.kind === 'error') {
+        const raw = errorTextOf(ev.delta);
+        if (isConcurrentError(raw)) {
+          showConcurrent(raw);
+          break;
+        }
+        if (isContextOverflow(raw)) {
+          showContextOverflow(raw);
+          break;
+        }
         const msg = ensureAssistant();
         msg.error = ev.delta || 'The model reported an error.';
         schedule();
@@ -2153,7 +2203,12 @@ function handlePiEvent(ev) {
       if (ev.role === 'assistant') {
         const msg = lastAssistant();
         if (msg) {
-          if (ev.stopReason === 'error' && ev.errorMessage) msg.error = ev.errorMessage;
+          const rawEnd = errorTextOf(ev.errorMessage);
+          const lane = ev.stopReason === 'error' && isConcurrentError(rawEnd);
+          const overflow = ev.stopReason === 'error' && isContextOverflow(rawEnd);
+          if (ev.stopReason === 'error' && ev.errorMessage) msg.error = lane || overflow ? '' : ev.errorMessage;
+          if (lane) showConcurrent(rawEnd);
+          if (overflow) showContextOverflow(rawEnd);
           msg.usage = ev.usage || null;
           msg.streaming = false;
         }
@@ -2213,16 +2268,59 @@ function handlePiEvent(ev) {
       schedule();
       break;
     }
-    case 'auto_retry_start':
+    case 'auto_retry_start': {
+      const rawRetry = errorTextOf(ev.errorMessage || ev.error || ev.message || '');
+      if (isConcurrentError(rawRetry)) {
+        showConcurrent(rawRetry);
+        break;
+      }
+      if (isContextOverflow(rawRetry)) {
+        showContextOverflow(rawRetry);
+        break;
+      }
+      if (Date.now() - Number(S.suppressRetryAt || 0) < 20000 && statusByKind('concurrent')) break;
       note('Retrying after an error (' + (ev.attempt || 1) + '/' + (ev.maxAttempts || 3) + ')…');
       break;
+    }
     case 'compaction_start':
-      note('Compacting the conversation to free context…');
+    case 'auto_compaction_start': {
+      S.compactStatus = statusPush({
+        kindOf: 'compact',
+        tone: 'info',
+        busy: true,
+        text: 'Compacting context…'
+      });
       break;
+    }
     case 'compaction_end':
-      if (ev.errorMessage) note('Compaction failed: ' + ev.errorMessage, true);
-      else note('Context compacted.');
+    case 'auto_compaction_end': {
+      const card = S.compactStatus || statusByKind('compact');
+      if (ev.errorMessage) {
+        const rawCompact = errorTextOf(ev.errorMessage);
+        const overflowCard = statusByKind('context');
+        if (overflowCard) {
+          /* the context-overflow card already carries this failure */
+          if (card) statusRemove(card);
+        } else if (card) {
+          card.busy = false;
+          card.tone = 'bad';
+          card.text = 'Compaction failed';
+          card.detail = rawCompact.slice(0, 200);
+        } else {
+          note('Compaction failed: ' + ev.errorMessage, true);
+        }
+      } else if (card) {
+        card.busy = false;
+        card.tone = 'ok';
+        card.text = '✓ Auto-compacted context';
+        card.detail = '';
+      } else {
+        statusPush({ kindOf: 'compact', tone: 'ok', text: '✓ Auto-compacted context' });
+      }
+      S.compactStatus = null;
+      schedule();
       break;
+    }
     case 'agent_end': {
       const last = lastAssistant();
       if (last && last.streaming) last.streaming = false;
@@ -2234,6 +2332,17 @@ function handlePiEvent(ev) {
       finalizeAssistant();
       if (S.speedLive) finishSpeed(S.turnTokens || 0);
       S.turnTokens = 0;
+      const stuckLane = statusByKind('concurrent');
+      if (stuckLane && stuckLane.busy) {
+        stuckLane.busy = false;
+        stuckLane.tone = 'warn';
+        stuckLane.text = '⚡ The free-pi lane is still busy';
+        stuckLane.detail = 'Close the session that holds it, or retry in a moment.';
+        stuckLane.actions = [
+          { label: 'Close stuck session', choice: 'close-stuck', primary: true },
+          { label: 'Retry', choice: 'retry-last' }
+        ];
+      }
       renderRunning();
       chime('ok');
       persistSession();
@@ -2263,6 +2372,552 @@ function toolResultText(ev) {
   if (!parts.length && typeof ev.output === 'string') parts.push(ev.output);
   return parts.join('\n').trim();
 }
+
+/* ---------------------------------------------- status cards, 429 & 413 triage */
+
+let statusSeq = 0;
+
+function statusPush(opts) {
+  const body = opts || {};
+  const msg = {
+    kind: 'status',
+    id: 'st' + (++statusSeq),
+    kindOf: body.kindOf || '',
+    tone: body.tone || 'warn',
+    text: body.text || '',
+    detail: body.detail || '',
+    busy: !!body.busy,
+    actions: body.actions || [],
+    queueId: body.queueId || '',
+    live: true
+  };
+  S.messages.push(msg);
+  syncActiveEntry();
+  schedule();
+  return msg;
+}
+
+function statusByKind(kind) {
+  for (let i = S.messages.length - 1; i >= 0; i--) {
+    const msg = S.messages[i];
+    if (msg.kind === 'status' && msg.kindOf === kind) return msg;
+  }
+  return null;
+}
+
+function statusRemove(msg) {
+  if (!msg) return;
+  const idx = S.messages.indexOf(msg);
+  if (idx >= 0) S.messages.splice(idx, 1);
+  syncActiveEntry();
+  schedule();
+}
+
+function statusHtml(msg) {
+  const icon = msg.busy
+    ? '<span class="tspin"></span>'
+    : msg.tone === 'ok'
+      ? '<span class="sicon ok">✓</span>'
+      : msg.tone === 'bad'
+        ? '<span class="sicon bad">✗</span>'
+        : '<span class="sicon">⚡</span>';
+  const buttons = msg.live
+    ? (msg.actions || []).map((item) =>
+        '<button class="sbtn' + (item.primary ? ' primary' : '') + '"' +
+          ' data-status-choice="' + esc(item.choice) + '"' +
+          ' data-status-id="' + esc(msg.id) + '">' + esc(item.label) + '</button>'
+      ).join('')
+    : '';
+  return (
+    '<div class="sys-status ' + esc(msg.tone || 'warn') + '">' +
+      icon +
+      '<div class="stxt">' + esc(msg.text) +
+        (msg.detail ? '<div class="sdetail">' + esc(msg.detail) + '</div>' : '') +
+      '</div>' +
+      (buttons ? '<div class="sacts">' + buttons + '</div>' : '') +
+    '</div>'
+  );
+}
+
+function errorTextOf(raw) {
+  if (raw == null) return '';
+  if (typeof raw === 'string') return raw;
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return String(raw);
+  }
+}
+
+function isConcurrentError(raw) {
+  const text = errorTextOf(raw);
+  if (!text) return false;
+  if (/context_too_long|context.{0,10}too long/i.test(text)) return false;
+  return /\b429\b|"code"\s*:\s*"concurrent"|one request at a time|another request|concurrent request/i.test(text);
+}
+
+function isContextOverflow(raw) {
+  const text = errorTextOf(raw);
+  if (!text) return false;
+  return /\b413\b|context_too_long|context.{0,12}too long|prompt is too long|maximum context/i.test(text);
+}
+
+function creditsFromText(raw) {
+  const text = errorTextOf(raw);
+  const patterns = [
+    /([\d][\d.,]*)\s*credits?\s*(?:left|remaining)/i,
+    /credits?\s*left[^0-9]{0,12}([\d][\d.,]*)/i
+  ];
+  for (const re of patterns) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const digits = String(m[1]).replace(/[^0-9]/g, '');
+    if (!digits) continue;
+    const value = Number(digits);
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+function applyCreditsFromError(raw) {
+  const left = creditsFromText(raw);
+  if (left == null) return false;
+  const cap = Number((S.account && S.account.capCredits) || 0);
+  const usedPercent = cap > 0 ? clamp(100 - (left / cap) * 100, 0, 100) : ((S.account && S.account.usedPercent) || 0);
+  S.account = Object.assign({ tier: 'free', lane: 'default', slowTier: false }, S.account || {}, {
+    leftCredits: left,
+    usedPercent
+  });
+  renderQuota();
+  invoke('svc:account')
+    .then((acc) => {
+      if (acc) {
+        S.account = acc;
+        renderQuota();
+      }
+    })
+    .catch(() => {});
+  return true;
+}
+
+function dropEmptyAssistant() {
+  let last = -1;
+  for (let i = S.messages.length - 1; i >= 0; i--) {
+    const msg = S.messages[i];
+    if (msg.kind === 'status' || msg.kind === 'note') continue;
+    last = i;
+    break;
+  }
+  if (last < 0) return;
+  const msg = S.messages[last];
+  if (msg.role !== 'assistant' || msg.streaming) return;
+  if (String(msg.text || '').trim() || msg.thinking || msg.error) return;
+  S.messages.splice(last, 1);
+}
+
+function queueWaitCard(res) {
+  const msg = statusPush({
+    kindOf: 'queue',
+    tone: 'warn',
+    busy: true,
+    text: '⏳ Waiting for active session to finish turn…',
+    detail: 'free-pi serves one model request at a time, so this prompt starts right after that turn.',
+    queueId: (res && res.id) || '',
+    actions: [
+      { label: 'Cancel', choice: 'queue-cancel' },
+      { label: 'Interrupt & run now', choice: 'queue-jump', primary: true }
+    ]
+  });
+  S.queueStatus = msg;
+  return msg;
+}
+
+function showConcurrent(raw) {
+  const seen = statusByKind('concurrent');
+  if (seen && seen.busy) {
+    applyCreditsFromError(raw);
+    renderRunning();
+    return seen;
+  }
+  applyCreditsFromError(raw);
+  S.suppressRetryAt = Date.now();
+  let msg = seen;
+  if (!msg) {
+    msg = statusPush({
+      kindOf: 'concurrent',
+      tone: 'warn',
+      busy: true,
+      text: '⚡ Another request is finishing · auto-retrying…',
+      detail: 'The lane frees up on its own. If it stays blocked, close the other session.',
+      actions: [{ label: 'Close stuck session', choice: 'close-stuck', primary: true }]
+    });
+  } else {
+    msg.busy = true;
+    msg.tone = 'warn';
+    msg.text = '⚡ Another request is finishing · auto-retrying…';
+    msg.actions = [{ label: 'Close stuck session', choice: 'close-stuck', primary: true }];
+    schedule();
+  }
+  renderRunning();
+  return msg;
+}
+
+function offerContextRescue(msg, raw) {
+  S.suppressRetryAt = Date.now();
+  applyCreditsFromError(raw);
+  msg.busy = false;
+  msg.tone = 'bad';
+  msg.text = '⚡ Context is still too heavy for this conversation';
+  msg.detail = 'The last step loaded heavy images or logs. Pick a rescue below — the dialogue itself is kept.';
+  msg.actions = [
+    { label: 'Strip heavy images & retry', choice: 'strip-images', primary: true },
+    { label: 'New session in same folder', choice: 'new-session-carry' }
+  ];
+  S.running = false;
+  finalizeAssistant();
+  if (S.speedLive) finishSpeed(0);
+  renderRunning();
+  schedule();
+  return msg;
+}
+
+async function emergencyCompact(msg) {
+  S.compactTries = Number(S.compactTries || 0) + 1;
+  try {
+    await invoke('chat:abort');
+  } catch {
+    /* the failed turn is already gone */
+  }
+  S.running = false;
+  finalizeAssistant();
+  if (S.speedLive) finishSpeed(0);
+  if (S.compactStatus) statusRemove(S.compactStatus);
+  renderRunning();
+  try {
+    await invoke('rpc:call', { type: 'compact' });
+    msg.busy = false;
+    msg.tone = 'ok';
+    msg.actions = [];
+    msg.text = '✓ Context compacted · continuing the task…';
+    msg.detail = '';
+    schedule();
+    await resendLastPrompt();
+  } catch (err) {
+    const text = errorTextOf(err && err.message);
+    if (isContextOverflow(text)) {
+      offerContextRescue(msg, text);
+      return;
+    }
+    msg.busy = false;
+    msg.tone = 'bad';
+    msg.text = '⚡ Context overflow · the automatic compact did not help';
+    msg.detail = 'Pick a rescue below — your dialogue history is kept.';
+    msg.actions = [
+      { label: 'Strip heavy images & retry', choice: 'strip-images', primary: true },
+      { label: 'New session in same folder', choice: 'new-session-carry' }
+    ];
+    renderRunning();
+    schedule();
+  }
+}
+
+function showContextOverflow(raw) {
+  const running = statusByKind('context');
+  if (running && running.busy) {
+    applyCreditsFromError(raw);
+    return running;
+  }
+  S.suppressRetryAt = Date.now();
+  applyCreditsFromError(raw);
+  let msg = running;
+  if (!msg) {
+    msg = statusPush({
+      kindOf: 'context',
+      tone: 'warn',
+      busy: true,
+      text: '⚡ Context overflow (heavy files/images) · running emergency /compact…',
+      actions: []
+    });
+  } else {
+    msg.busy = true;
+    msg.tone = 'warn';
+    msg.text = '⚡ Context overflow (heavy files/images) · running emergency /compact…';
+    msg.actions = [];
+    schedule();
+  }
+  /* One automatic compact per prompt: two error events for the same failed
+     turn must not start two compact runs. A new prompt starts a new budget. */
+  const guard = String(S.sessionId) + '|' + String((S.lastPrompt && S.lastPrompt.text) || '');
+  const now = Date.now();
+  const firstTry = S.compactGuard !== guard || now - Number(S.compactGuardAt || 0) > 60000;
+  if (firstTry) {
+    S.compactGuard = guard;
+    S.compactGuardAt = now;
+  }
+  if (!firstTry) {
+    offerContextRescue(msg, raw);
+    return msg;
+  }
+  emergencyCompact(msg);
+  return msg;
+}
+
+async function resendLastPrompt() {
+  const last = S.lastPrompt;
+  if (!last || !String(last.text || '').trim()) {
+    toast('Nothing to retry in this session.', true);
+    return;
+  }
+  S.running = true;
+  if (!S.messages.some((m) => m.role === 'assistant' && m.streaming)) {
+    S.messages.push({ role: 'assistant', text: '', thinking: '', streaming: true });
+  }
+  startSpeed();
+  renderRunning();
+  schedule();
+  let res;
+  try {
+    res = await invoke('chat:send', {
+      message: last.text,
+      images: last.images || [],
+      attachments: last.files || [],
+      behavior: 'prompt'
+    });
+  } catch (err) {
+    res = { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+  if (res && res.queued) {
+    S.running = false;
+    finalizeAssistant();
+    dropEmptyAssistant();
+    if (S.speedLive) finishSpeed(0);
+    queueWaitCard(res);
+    renderRunning();
+    schedule();
+    return;
+  }
+  if (!res || !res.ok) {
+    const text = errorTextOf(res && res.error);
+    S.running = false;
+    finalizeAssistant();
+    if (S.speedLive) finishSpeed(0);
+    if (isConcurrentError(text)) showConcurrent(text);
+    else if (isContextOverflow(text)) showContextOverflow(text);
+    else note((res && res.error) || 'The retry could not start.', true);
+    renderRunning();
+    schedule();
+  }
+}
+
+async function chooseCloseStuck(msg) {
+  msg.busy = true;
+  msg.tone = 'warn';
+  msg.text = '⚡ Releasing the other free-pi session…';
+  msg.actions = [];
+  schedule();
+  let released = false;
+  try {
+    const res = await invoke('svc:close-other-session');
+    released = !!(res && res.released);
+  } catch (err) {
+    note(err.message, true);
+  }
+  msg.busy = false;
+  msg.tone = 'ok';
+  msg.text = released
+    ? '✓ Released the other session · retrying this turn…'
+    : '✓ Retrying this turn…';
+  msg.actions = [];
+  schedule();
+  setTimeout(() => {
+    resendLastPrompt();
+  }, 900);
+}
+
+async function chooseStripImages(msg) {
+  msg.busy = true;
+  msg.tone = 'warn';
+  msg.text = '⚡ Stripping heavy image payloads from the session file…';
+  msg.detail = '';
+  msg.actions = [];
+  schedule();
+  try {
+    const res = await invoke('session:strip-images', { key: S.sessionId, maxBytes: 20000 });
+    msg.busy = false;
+    msg.tone = 'ok';
+    msg.text = '✓ Removed ' + (res && res.removed ? res.removed : 0) + ' heavy image block(s) · history kept';
+    msg.detail = res && res.savedBytes
+      ? 'Freed ' + Math.round(Number(res.savedBytes) / 1024) + ' KB · backup: ' + String(res.backup || '').split(/[\\/]/).pop()
+      : '';
+    msg.actions = [];
+    schedule();
+    setTimeout(() => {
+      resendLastPrompt();
+    }, 1200);
+  } catch (err) {
+    msg.busy = false;
+    msg.tone = 'bad';
+    msg.text = '⚡ Could not rewrite the session file';
+    msg.detail = errorTextOf(err && err.message).slice(0, 240);
+    msg.actions = [
+      { label: 'New session in same folder', choice: 'new-session-carry', primary: true }
+    ];
+    schedule();
+  }
+}
+
+async function chooseNewSessionCarry(msg) {
+  const prompt = S.lastPrompt;
+  msg.busy = true;
+  msg.text = '⚡ Opening a clean session in the same folder…';
+  msg.actions = [];
+  schedule();
+  try {
+    await invoke('rpc:call', { type: 'new_session' }).catch(() => {});
+    await newSession();
+  } catch {
+    /* newSession already falls back to a blank transcript */
+  }
+  if (prompt && String(prompt.text || '').trim()) {
+    S.attachments = [];
+    el.input.value = prompt.text;
+    autosize();
+    await send('prompt');
+  } else {
+    toast('Fresh session ready.');
+  }
+}
+
+async function handleStatusChoice(choice, msg) {
+  if (choice === 'queue-cancel') {
+    if (!msg) return;
+    if (msg.queueId) {
+      try {
+        await invoke('queue:cancel', { id: msg.queueId });
+      } catch {
+        /* the prompt may have started in the meantime */
+      }
+    }
+    statusRemove(msg);
+    S.running = false;
+    renderRunning();
+    schedule();
+    return;
+  }
+  if (choice === 'queue-jump') {
+    if (!msg) return;
+    msg.busy = true;
+    msg.text = '⚡ Interrupting the active session to run this prompt…';
+    msg.actions = [];
+    schedule();
+    try {
+      await invoke('queue:jump', { id: msg.queueId });
+    } catch (err) {
+      msg.busy = false;
+      msg.tone = 'bad';
+      msg.text = '⚡ Could not interrupt the other session';
+      msg.detail = errorTextOf(err && err.message).slice(0, 200);
+      schedule();
+    }
+    return;
+  }
+  if (choice === 'close-stuck') return chooseCloseStuck(msg);
+  if (choice === 'retry-last') {
+    if (msg) statusRemove(msg);
+    return resendLastPrompt();
+  }
+  if (choice === 'strip-images') return chooseStripImages(msg);
+  if (choice === 'new-session-carry') return chooseNewSessionCarry(msg);
+}
+
+function handleQueueEvent(payload) {
+  const body = payload || {};
+  if (body.key && body.key !== S.sessionId) {
+    if (body.state === 'started') {
+      const entry = storeEntry(body.key);
+      if (entry) {
+        entry.running = true;
+        entry.messages = entry.messages.filter((m) => !(m.kind === 'status' && m.kindOf === 'queue'));
+      }
+      S.busy[body.key] = true;
+      renderSessions();
+    }
+    if (body.state === 'error' && body.error) toast('A background session could not start its prompt.', true);
+    return;
+  }
+  const msg = statusByKind('queue');
+  if (body.state === 'waiting') return;
+  if (body.state === 'started') {
+    if (msg) statusRemove(msg);
+    S.running = true;
+    if (!S.messages.some((m) => m.role === 'assistant' && m.streaming)) {
+      S.messages.push({ role: 'assistant', text: '', thinking: '', streaming: true });
+    }
+    startSpeed();
+    renderRunning();
+    schedule();
+    persistSession();
+    return;
+  }
+  if (body.state === 'canceled') {
+    if (msg) {
+      msg.busy = false;
+      msg.tone = 'ok';
+      msg.text = '⏳ Removed from the waiting queue';
+      msg.detail = '';
+      msg.actions = [];
+    }
+    S.running = false;
+    renderRunning();
+    schedule();
+    persistSession();
+    return;
+  }
+  if (body.state === 'error') {
+    if (msg) {
+      msg.busy = false;
+      msg.tone = 'bad';
+      msg.text = '⚡ The queued prompt could not start';
+      msg.detail = String(body.error || '').slice(0, 200);
+      msg.actions = [{ label: 'Retry', choice: 'retry-last', primary: true }];
+    }
+    S.running = false;
+    renderRunning();
+    schedule();
+  }
+}
+
+async function reconcileQueue() {
+  let snap = null;
+  try {
+    snap = await invoke('queue:list');
+  } catch {
+    return;
+  }
+  if (!snap) return;
+  const mine = (snap.queue || []).filter((item) => item.key === S.sessionId);
+  const waiting = statusByKind('queue');
+  if (mine.length && !waiting) {
+    queueWaitCard({ id: mine[0].id, activeKey: snap.activeKey });
+  } else if (!mine.length && waiting && waiting.busy) {
+    waiting.busy = false;
+    waiting.tone = 'ok';
+    waiting.text = '✓ The queued prompt already started';
+    waiting.actions = [];
+    schedule();
+  }
+}
+
+document.addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-status-choice]');
+  if (!btn) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const id = btn.getAttribute('data-status-id');
+  const choice = btn.getAttribute('data-status-choice');
+  const msg = S.messages.find((item) => item.kind === 'status' && item.id === id) || null;
+  handleStatusChoice(choice, msg).catch((err) => toast(errorTextOf(err && err.message), true));
+});
 
 /* ------------------------------------------------------------------- send */
 
@@ -2309,6 +2964,7 @@ async function send(behaviorOverride) {
   const behavior = behaviorOverride || (S.running ? 'steer' : 'prompt');
 
   const tag = behavior === 'steer' ? 'steer' : behavior === 'followUp' ? 'follow-up' : '';
+  S.lastPrompt = { text, images, files };
   S.stick = true;
   S.messages.push({ role: 'user', text, tag });
   if (behavior === 'prompt' || !S.running) {
@@ -2332,11 +2988,26 @@ async function send(behaviorOverride) {
     res = { ok: false, error: err && err.message ? err.message : String(err) };
   }
 
+  if (res && res.queued) {
+    S.running = false;
+    finalizeAssistant();
+    dropEmptyAssistant();
+    if (S.speedLive) finishSpeed(0);
+    queueWaitCard(res);
+    renderRunning();
+    schedule();
+    persistSession();
+    return;
+  }
+
   if (!res || !res.ok) {
+    const failure = errorTextOf(res && res.error);
     S.running = false;
     finalizeAssistant();
     if (S.speedLive) finishSpeed(0);
-    note((res && res.error) || 'Could not send the message.', true);
+    if (isConcurrentError(failure)) showConcurrent(failure);
+    else if (isContextOverflow(failure)) showContextOverflow(failure);
+    else note((res && res.error) || 'Could not send the message.', true);
     renderRunning();
     chime('bad');
   } else if (res.behavior === 'prompt' && (behavior === 'steer' || behavior === 'followUp')) {
@@ -3185,6 +3856,7 @@ async function loadSession(id) {
     }
     renderAll();
     pinBottom(true);
+    reconcileQueue();
     if (res.engine && res.engine.error) note(res.engine.error, true);
   } catch (err) {
     toast(err.message, true);

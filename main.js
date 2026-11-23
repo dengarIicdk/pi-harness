@@ -626,6 +626,68 @@ function killTree(child) {
   }
 }
 
+function killTreeNow(child) {
+  if (!child || child.killed) return;
+  try {
+    if (IS_WIN) spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 6000 });
+    else child.kill('SIGKILL');
+  } catch {
+    try {
+      child.kill();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function harnessAgentPids() {
+  if (!IS_WIN) return [];
+  const script =
+    "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
+    "Where-Object { $_.CommandLine -like '*--session-id freepi-*' -and $_.CommandLine -like '*--mode rpc*' } | " +
+    'ForEach-Object { $_.ProcessId }';
+  try {
+    const out = spawnSync('powershell', ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15000
+    });
+    if (!out || out.status !== 0 || !out.stdout) return [];
+    return String(out.stdout)
+      .split(/\s+/)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0);
+  } catch {
+    return [];
+  }
+}
+
+/* A harness that was killed from the outside (or crashed) leaves its agent
+   children running; they keep holding the free-pi lane and cause 429. */
+function sweepOrphanAgents() {
+  const pids = harnessAgentPids();
+  if (!pids.length) return [];
+  const alive = new Set();
+  for (const [, item] of enginePool) if (item.child && item.child.pid) alive.add(item.child.pid);
+  if (engine.child && engine.child.pid) alive.add(engine.child.pid);
+  const killed = [];
+  for (const pid of pids) {
+    if (alive.has(pid)) continue;
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, timeout: 6000 });
+      killed.push(pid);
+    } catch {
+      /* the process may have exited on its own */
+    }
+  }
+  if (killed.length) {
+    emit('stderr', {
+      text: 'Closed ' + killed.length + ' leftover agent process(es) from a previous run.'
+    });
+  }
+  return killed;
+}
+
 function tryWrapper(command, args, timeoutMs) {
   return new Promise((resolve) => {
     let settled = false;
@@ -857,9 +919,14 @@ function handleSessionEvent(rec, eng) {
     case 'agent_start':
     case 'turn_start':
       owner.streaming = true;
+      if (!activeTurnKey || activeTurnKey === key) activeTurnKey = key;
       break;
     case 'agent_settled':
       owner.streaming = false;
+      if (activeTurnKey === key) {
+        activeTurnKey = '';
+        setTimeout(() => drainTurnQueue(), 400);
+      }
       refreshAccount(true).catch(() => {});
       refreshAd(true).catch(() => {});
       engineCall('get_session_stats', {}, 15000, owner)
@@ -982,12 +1049,16 @@ function attachEngine(child, info, eng) {
   });
 
   child.on('error', (err) => {
+    if (owner.child !== child) return;
     owner.ready = false;
     rejectPending('The agent process failed: ' + err.message, owner);
     emit('engine', { state: 'error', error: err.message, info: engineStatus(owner), key: owner.key });
   });
 
   child.on('close', (code, signal) => {
+    /* A replaced process must not clear state or reject RPC calls that belong
+       to the freshly spawned one (fast stop + respawn, e.g. the session rescue). */
+    if (owner.child !== child) return;
     const wasReady = owner.ready;
     owner.ready = false;
     owner.streaming = false;
@@ -1133,6 +1204,83 @@ async function stopEngine(eng) {
   emit('engine', { state: 'stopped', info: engineStatus(owner), key: owner.key });
 }
 
+/* ------------------------------------------------- heavy-image session rescue */
+
+/* The pi session is an append-only jsonl log. Base64 screenshots inside tool
+   results are what push a conversation over the context limit, so they can be
+   swapped for a short text marker without losing the dialogue itself. */
+function sessionFileFor(key) {
+  const dir = piSessionDir();
+  const wanted = engineSessionId({ key });
+  let best = null;
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return '';
+  }
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    const match = /_([A-Za-z0-9_-]+)\.jsonl$/.exec(name);
+    if (!match || match[1] !== wanted) continue;
+    const full = path.join(dir, name);
+    try {
+      const stat = fs.statSync(full);
+      if (!best || stat.mtimeMs > best.mtimeMs) best = { full, mtimeMs: stat.mtimeMs };
+    } catch {
+      /* skip unreadable files */
+    }
+  }
+  return best ? best.full : '';
+}
+
+function stripHeavyImages(file, maxBytes) {
+  const raw = fs.readFileSync(file, 'utf8');
+  const lines = raw.split('\n');
+  let removed = 0;
+  let kept = 0;
+  const pieces = [];
+  for (const line of lines) {
+    if (!line.trim() || !/"type"\s*:\s*"image"/.test(line)) {
+      pieces.push(line);
+      continue;
+    }
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      pieces.push(line);
+      continue;
+    }
+    const content = record && record.message && record.message.content;
+    if (Array.isArray(content)) {
+      record.message.content = content.map((part) => {
+        if (part && part.type === 'image' && typeof part.data === 'string' && part.data.length > maxBytes) {
+          removed += 1;
+          return { type: 'text', text: '[image omitted]' };
+        }
+        kept += 1;
+        return part;
+      });
+    } else if (record && Array.isArray(record.content)) {
+      record.content = record.content.map((part) => {
+        if (part && part.type === 'image' && typeof part.data === 'string' && part.data.length > maxBytes) {
+          removed += 1;
+          return { type: 'text', text: '[image omitted]' };
+        }
+        kept += 1;
+        return part;
+      });
+    }
+    pieces.push(JSON.stringify(record));
+  }
+  const next = pieces.join('\n');
+  const backup = file + '.bak';
+  fs.copyFileSync(file, backup);
+  fs.writeFileSync(file, next, 'utf8');
+  return { removed, kept, backup, savedBytes: Math.max(0, raw.length - next.length) };
+}
+
 /* ------------------------------------------------------ session switching */
 
 function makeEngine(key, root) {
@@ -1191,24 +1339,133 @@ function activateEngine(key, root) {
 }
 
 function stopEngineByKey(key) {
+  for (let i = turnQueue.length - 1; i >= 0; i--) {
+    if (turnQueue[i].key !== key) continue;
+    const [dropped] = turnQueue.splice(i, 1);
+    emitQueue(key, { state: 'canceled', id: dropped.id, reason: 'session closed' });
+  }
+  if (activeTurnKey === key) activeTurnKey = '';
   const target = enginePool.get(key) || (engine.key === key ? engine : null);
   if (!target) return Promise.resolve(false);
   enginePool.delete(key);
-  return stopEngine(target).then(() => true);
+  const wasActive = engine === target;
+  return stopEngine(target).then(() => {
+    if (wasActive) {
+      /* The old object keeps a dead child; swap in a clean engine so the next
+         spawn never inherits a stale exit event. */
+      engine = makeEngine(target.key, target.root);
+      activeEngineKey = engine.key;
+      projectRoot = engine.root || projectRoot;
+    }
+    return true;
+  });
 }
 
 function stopAllEngines() {
   for (const [key, item] of enginePool) {
     item.stopping = true;
-    if (item.child) killTree(item.child);
+    if (item.child) killTreeNow(item.child);
     item.child = null;
     item.ready = false;
     enginePool.delete(key);
   }
   engine.stopping = true;
-  if (engine.child) killTree(engine.child);
+  if (engine.child) killTreeNow(engine.child);
   engine.child = null;
   engine.ready = false;
+}
+
+/* ------------------------------------------- global network turn coordinator */
+
+/* free-pi serves one in-flight model request at a time. A turn that starts in
+   another folder would collide with the running one (HTTP 429 "concurrent"), so
+   prompts that arrive while another session generates wait in this queue. */
+const turnQueue = [];
+let activeTurnKey = '';
+let turnSeq = 0;
+
+function networkTurnOwner() {
+  if (!activeTurnKey) return null;
+  return enginePool.get(activeTurnKey) || (engine.key === activeTurnKey ? engine : null);
+}
+
+function activeNetworkTurn() {
+  const owner = networkTurnOwner();
+  return owner && owner.streaming ? activeTurnKey : '';
+}
+
+function queueSnapshot() {
+  const owner = networkTurnOwner();
+  return {
+    activeKey: activeTurnKey,
+    activeName: owner && owner.root ? safeBasename(owner.root) : '',
+    queue: turnQueue.map((item) => ({
+      id: item.id,
+      key: item.key,
+      project: item.root ? safeBasename(item.root) : '',
+      preview: String(item.fields && item.fields.message ? item.fields.message : '').slice(0, 120),
+      enqueuedAt: item.enqueuedAt
+    }))
+  };
+}
+
+function emitQueue(key, patch) {
+  emit('queue', Object.assign({ key }, patch || {}));
+}
+
+function enqueuePrompt(fields, owner, meta) {
+  const item = {
+    id: 'q' + ++turnSeq,
+    key: (owner && owner.key) || 'default',
+    root: (owner && owner.root) || '',
+    fields,
+    enqueuedAt: Date.now(),
+    behavior: (meta && meta.behavior) || 'prompt'
+  };
+  turnQueue.push(item);
+  emitQueue(item.key, {
+    state: 'waiting',
+    id: item.id,
+    position: turnQueue.length,
+    activeKey: activeTurnKey,
+    activeName: queueSnapshot().activeName
+  });
+  return { ok: true, queued: true, id: item.id, position: turnQueue.length, activeKey: activeTurnKey };
+}
+
+async function runQueuedTurn(item) {
+  activeTurnKey = item.key;
+  let owner = enginePool.get(item.key);
+  try {
+    if (!owner) {
+      owner = engine.key === item.key ? engine : makeEngine(item.key, item.root || projectRoot);
+      enginePool.set(owner.key, owner);
+    }
+    if (!owner.ready || !owner.child) await ensureEngineFor(owner);
+    owner = enginePool.get(item.key) || owner;
+    owner.streaming = true;
+    emitQueue(item.key, { state: 'started', id: item.id, activeKey: item.key });
+    const data = await engineCall('prompt', item.fields, 600000, owner);
+    owner.lastPromptAt = Date.now();
+    if (data && data.disposition === 'queued') {
+      emitQueue(item.key, { state: 'accepted', id: item.id });
+    }
+    return { ok: true, id: item.id };
+  } catch (err) {
+    owner.streaming = false;
+    emitQueue(item.key, { state: 'error', id: item.id, error: err.message });
+    if (activeTurnKey === item.key) activeTurnKey = '';
+    setTimeout(() => drainTurnQueue(), 600);
+    return { ok: false, id: item.id, error: err.message };
+  }
+}
+
+function drainTurnQueue() {
+  if (!turnQueue.length) return;
+  if (activeNetworkTurn()) return;
+  const item = turnQueue.shift();
+  if (!item) return;
+  runQueuedTurn(item);
 }
 
 /* ------------------------------------------------------------ chat input */
@@ -1294,12 +1551,18 @@ async function sendChat(payload) {
     if (state && state.isStreaming === false) effective = 'prompt';
   }
 
+  /* Another folder is mid-turn: hold this prompt instead of colliding with it. */
+  if (effective === 'prompt' && activeNetworkTurn() && activeNetworkTurn() !== engine.key) {
+    return enqueuePrompt(fields, engine, { behavior: effective });
+  }
+
   let data;
   if (effective === 'steer') data = await engineCall('steer', fields, 60000);
   else if (effective === 'followUp') data = await engineCall('follow_up', fields, 60000);
   else data = await engineCall('prompt', fields, 60000);
 
   engine.lastPromptAt = Date.now();
+  if (effective === 'prompt' && activeTurnKey === '') activeTurnKey = engine.key;
   if (effective === 'prompt' && data && data.disposition !== 'queued') engine.streaming = true;
   return { ok: true, behavior: effective, disposition: (data && data.disposition) || 'started' };
 }
@@ -2275,6 +2538,47 @@ function registerIpc() {
       return { ok: false, error: err.message };
     }
   });
+  ipcMain.handle('app:sweep-agents', () => ({ killed: sweepOrphanAgents(), pids: harnessAgentPids() }));
+  ipcMain.handle('queue:list', () => queueSnapshot());
+  ipcMain.handle('queue:cancel', (_e, payload) => {
+    const id = String((payload && payload.id) || '');
+    const idx = turnQueue.findIndex((item) => item.id === id);
+    if (idx < 0) return { ok: false, error: 'That prompt is no longer waiting.' };
+    const [dropped] = turnQueue.splice(idx, 1);
+    emitQueue(dropped.key, { state: 'canceled', id: dropped.id });
+    return { ok: true, key: dropped.key };
+  });
+  ipcMain.handle('queue:jump', async (_e, payload) => {
+    const id = String((payload && payload.id) || '');
+    const idx = turnQueue.findIndex((item) => item.id === id);
+    if (idx < 0) return { ok: false, error: 'That prompt is no longer waiting.' };
+    const [item] = turnQueue.splice(idx, 1);
+    const owner = networkTurnOwner();
+    if (owner) {
+      try {
+        await engineCall('abort', {}, 30000, owner);
+      } catch {
+        /* the running turn may already be gone */
+      }
+      owner.streaming = false;
+    }
+    activeTurnKey = '';
+    runQueuedTurn(item);
+    return { ok: true, key: item.key };
+  });
+  ipcMain.handle('session:strip-images', async (_e, payload) => {
+    const key = String((payload && payload.key) || activeEngineKey || '');
+    const owner = enginePool.get(key) || (engine.key === key ? engine : null);
+    const root = (owner && owner.root) || projectRoot;
+    const file = sessionFileFor(key);
+    if (!file) throw new Error('Could not find the pi session file for this conversation.');
+    await stopEngineByKey(key);
+    const result = stripHeavyImages(file, Number((payload && payload.maxBytes) || 20000));
+    activateEngine(key, root);
+    emit('engine', { state: 'starting', key, info: engineStatus() });
+    await ensureEngine();
+    return Object.assign({ ok: true, file, key }, result);
+  });
   ipcMain.handle('chat:abort', () => abortChat());
   ipcMain.handle('chat:bash', async (_e, payload) => {
     const body = payload || {};
@@ -2463,6 +2767,15 @@ if (!gotLock) {
     createWindow();
     loadAppState();
     probeNodeRuntime();
+    /* After the window is up: clear agent processes left behind by a hard kill
+       or a crash of an earlier harness run, so they never hold the lane. */
+    setTimeout(() => {
+      try {
+        sweepOrphanAgents();
+      } catch {
+        /* cleanup is best-effort */
+      }
+    }, 2500);
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
