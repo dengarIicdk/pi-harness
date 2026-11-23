@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+_build/
+*.exe
+*.nsis.7z
+*.blockmap
+builder-debug.yml
+
+# local scratch / test harnesses
+_t*/
+_t6/
+*.log
+.chk.js

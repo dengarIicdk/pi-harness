@@ -1,0 +1,50 @@
+{
+  "name": "pi-harness",
+  "productName": "Pi Harness",
+  "version": "1.0.0",
+  "description": "Minimal OpenCode-style desktop client for the free-pi coding agent: no API keys, one window, tool stream, @file, screenshots.",
+  "main": "main.js",
+  "author": "Pi Harness",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "icons": "electron build/make-icons.js",
+    "build": "electron-builder --win portable",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7"
+  },
+  "build": {
+    "appId": "com.piharness.app",
+    "productName": "Pi Harness",
+    "asar": true,
+    "compression": "maximum",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "index.html",
+      "package.json",
+      "build/logo.svg",
+      "build/icon.png",
+      "build/icon.ico"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "Pi-Harness-Setup.exe"
+    }
+  }
+}
